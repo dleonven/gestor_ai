@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: whatsapp-hello-world-mvp
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GRAPH_API_VERSION
+        value: v19.0
+      - key: PORT
+        value: 3000
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
