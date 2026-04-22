@@ -1,5 +1,6 @@
 from app.bot_intent import (
     INTENT_CONTRACT_QA,
+    INTENT_PROPERTY_LIST,
     INTENT_RENT_STATUS,
     INTENT_UTILITY_DEBT,
     PROVIDER_ENEL,
@@ -29,3 +30,9 @@ def test_classify_message_fallback_extracts_contract_intent() -> None:
     result = classify_message_fallback("Cuando puedo dar aviso segun el contrato?")
 
     assert result.intent == INTENT_CONTRACT_QA
+
+
+def test_classify_message_fallback_extracts_property_list_intent() -> None:
+    result = classify_message_fallback("cuantos departamentos mios tienes registrados?")
+
+    assert result.intent == INTENT_PROPERTY_LIST

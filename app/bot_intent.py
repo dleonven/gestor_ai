@@ -10,6 +10,7 @@ import httpx
 INTENT_CONTRACT_QA = "CONTRACT_QA"
 INTENT_RENT_STATUS = "RENT_STATUS"
 INTENT_UTILITY_DEBT = "UTILITY_DEBT"
+INTENT_PROPERTY_LIST = "PROPERTY_LIST"
 INTENT_UNKNOWN = "UNKNOWN"
 
 UTILITY_ELECTRICITY = "ELECTRICITY"
@@ -21,7 +22,7 @@ SYSTEM_PROMPT = """Eres el clasificador de intención de un bot de WhatsApp para
 
 Devuelve solo JSON válido con esta forma:
 {
-  "intent": "CONTRACT_QA|RENT_STATUS|UTILITY_DEBT|UNKNOWN",
+  "intent": "CONTRACT_QA|RENT_STATUS|UTILITY_DEBT|PROPERTY_LIST|UNKNOWN",
   "utility_type": "ELECTRICITY|null",
   "provider": "ENEL|null",
   "property_hint": "texto breve|null"
@@ -30,6 +31,7 @@ Devuelve solo JSON válido con esta forma:
 Reglas:
 - Si pregunta por luz, electricidad, cuenta de luz o ENEL, usa intent UTILITY_DEBT, utility_type ELECTRICITY y provider ENEL.
 - Si pregunta si pagaron el arriendo o estado del arriendo, usa RENT_STATUS.
+- Si pregunta cuántos departamentos, propiedades o inmuebles tiene registrados, usa PROPERTY_LIST.
 - Si pregunta por cláusulas, garantía, aviso, reajuste, fechas o monto del contrato, usa CONTRACT_QA.
 - property_hint debe ser una palabra o frase mencionada por el usuario para identificar la propiedad, por ejemplo "navidad".
 - Si no hay pista de propiedad, usa null.
@@ -112,6 +114,16 @@ def classify_message_fallback(message_body: str) -> BotIntent:
         )
 
     if (
+        "cuantos departamentos" in normalized
+        or "cuantas propiedades" in normalized
+        or "cuantos inmuebles" in normalized
+        or "departamentos registrados" in normalized
+        or "propiedades registradas" in normalized
+        or "inmuebles registrados" in normalized
+    ):
+        return BotIntent(intent=INTENT_PROPERTY_LIST)
+
+    if (
         "pagaron el arriendo" in normalized
         or "se pago el arriendo" in normalized
         or "estado del arriendo" in normalized
@@ -161,6 +173,7 @@ def _parse_intent_payload(data: dict[str, Any]) -> BotIntent:
         INTENT_CONTRACT_QA,
         INTENT_RENT_STATUS,
         INTENT_UTILITY_DEBT,
+        INTENT_PROPERTY_LIST,
         INTENT_UNKNOWN,
     }:
         intent = INTENT_UNKNOWN

@@ -9,20 +9,22 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.bot_intent import (
     INTENT_CONTRACT_QA,
+    INTENT_PROPERTY_LIST,
     INTENT_RENT_STATUS,
     INTENT_UTILITY_DEBT,
     classify_message,
 )
+from app.capabilities import build_supported_actions_reply
 from app.config import Settings
+from app.conversation_state import STATE_COLLECT_ENEL_CLIENT_ID, get_active_conversation_state
 from app.contract_qa import answer_contract_question
 from app.domain_repo import (
-    get_enel_electricity_account_for_user,
     get_latest_rent_status_for_landlord,
+    list_active_properties_for_user,
 )
-from app.grounded_response import compose_grounded_response
-from app.sencillito import fetch_sencillito_enel_debt_status
 from app.schemas import extract_incoming_messages
 from app.users_repo import ROLE_LANDLORD, ROLE_TENANT, get_user_by_phone
+from app.utility_agent import handle_utility_debt_task
 from app.whatsapp import send_text_reply
 
 
@@ -103,19 +105,21 @@ async def resolve_reply_body(
 
     if user is None or not user.is_active:
         return UNAUTHORIZED_REPLY
+    if await has_pending_utility_task(sender_phone, settings):
+        return await resolve_enel_debt_status(sender_phone, message_body, settings)
     intent = classify_message(message_body)
     if intent.intent == INTENT_CONTRACT_QA:
         return await resolve_contract_question(message_body)
+    if intent.intent == INTENT_PROPERTY_LIST:
+        return await resolve_property_list(sender_phone, settings)
     if user.role == ROLE_LANDLORD and intent.intent == INTENT_RENT_STATUS:
         return await resolve_landlord_rent_status(sender_phone, settings)
     if intent.intent == INTENT_UTILITY_DEBT:
         return await resolve_enel_debt_status(
-            sender_phone, settings, property_hint=intent.property_hint
+            sender_phone, message_body, settings, property_hint=intent.property_hint
         )
-    if user.role == ROLE_TENANT:
-        return TENANT_REPLY
-    if user.role == ROLE_LANDLORD:
-        return LANDLORD_REPLY
+    if user.role in (ROLE_TENANT, ROLE_LANDLORD):
+        return unknown_intent_reply(user.role)
     return UNAUTHORIZED_REPLY
 
 
@@ -148,71 +152,57 @@ async def resolve_landlord_rent_status(sender_phone: str, settings: Settings) ->
     )
 
 
+async def resolve_property_list(sender_phone: str, settings: Settings) -> str:
+    try:
+        properties = await asyncio.to_thread(
+            list_active_properties_for_user, sender_phone, settings
+        )
+    except Exception:
+        LOGGER.exception("property_list_lookup status=error from=%s", sender_phone)
+        return "No pude revisar tus departamentos registrados ahora."
+
+    if not properties:
+        return "No encontré departamentos activos asociados a tu usuario."
+
+    if len(properties) == 1:
+        return f"Tengo 1 departamento registrado: {properties[0].name}."
+
+    property_names = "\n".join(
+        f"{index}. {property_record.name}"
+        for index, property_record in enumerate(properties, start=1)
+    )
+    return f"Tengo {len(properties)} departamentos registrados:\n{property_names}"
+
+
+async def has_pending_utility_task(sender_phone: str, settings: Settings) -> bool:
+    try:
+        state = await asyncio.to_thread(
+            get_active_conversation_state, sender_phone, settings
+        )
+    except Exception:
+        LOGGER.exception("conversation_state_lookup status=error from=%s", sender_phone)
+        return False
+    return state is not None and state.state_type == STATE_COLLECT_ENEL_CLIENT_ID
+
+
 async def resolve_enel_debt_status(
-    sender_phone: str, settings: Settings, property_hint: Optional[str] = None
+    sender_phone: str,
+    message_body: str,
+    settings: Settings,
+    property_hint: Optional[str] = None,
 ) -> str:
     try:
-        utility_account = await asyncio.to_thread(
-            get_enel_electricity_account_for_user,
+        result = await asyncio.to_thread(
+            handle_utility_debt_task,
             sender_phone,
+            message_body,
             settings,
-            property_hint,
+            property_hint=property_hint,
         )
     except Exception:
-        LOGGER.exception("enel_account_lookup status=error from=%s", sender_phone)
-        return "No pude revisar la cuenta de luz ahora."
-
-    if utility_account is None:
-        if property_hint:
-            return (
-                "No encontré una cuenta ENEL activa asociada a esa propiedad. "
-                "Revisa si el nombre del departamento está bien escrito."
-            )
-        return "No encontré una cuenta ENEL activa asociada a tu usuario."
-
-    try:
-        debt_status = await asyncio.to_thread(
-            fetch_sencillito_enel_debt_status,
-            utility_account.service_account_number,
-        )
-    except Exception:
-        LOGGER.exception(
-            "enel_debt_lookup status=error account=%s",
-            utility_account.service_account_number,
-        )
+        LOGGER.exception("utility_agent status=error from=%s", sender_phone)
         return "No pude consultar ENEL en este momento. Inténtalo nuevamente en unos minutos."
-
-    invoice = debt_status.invoices[0] if debt_status.invoices else None
-    amount_text = format_clp(debt_status.total_amount)
-    if debt_status.total_amount > 0:
-        fallback_text = (
-            f"Para {utility_account.property_name}, la cuenta ENEL "
-            f"{utility_account.service_account_number} aparece con deuda actual de "
-            f"{amount_text}."
-        )
-        if invoice and invoice.document_number:
-            fallback_text += f" Documento asociado: {invoice.document_number}."
-    else:
-        fallback_text = (
-            f"Para {utility_account.property_name}, no aparece deuda actual en la "
-            f"cuenta ENEL {utility_account.service_account_number}."
-        )
-
-    facts = {
-        "capability": "enel_electricity_debt",
-        "property_name": utility_account.property_name,
-        "provider": utility_account.provider_name,
-        "utility_type": utility_account.utility_type,
-        "client_identifier": utility_account.service_account_number,
-        "debt_found": debt_status.total_amount > 0,
-        "amount": debt_status.total_amount,
-        "currency": "CLP",
-        "amount_text": amount_text,
-        "document_number": None if invoice is None else invoice.document_number,
-        "debt_label": None if invoice is None else invoice.label,
-        "source": "portal de pago",
-    }
-    return compose_grounded_response(facts, fallback_text)
+    return result.reply
 
 
 async def resolve_contract_question(message_body: str) -> str:
@@ -258,3 +248,7 @@ def normalize_text(value: str) -> str:
 
 def format_clp(amount: int) -> str:
     return f"${amount:,.0f}".replace(",", ".")
+
+
+def unknown_intent_reply(role: str) -> str:
+    return build_supported_actions_reply("No pude identificar bien tu solicitud.", role)

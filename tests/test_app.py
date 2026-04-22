@@ -6,7 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.domain_repo import RentStatusRecord
-from app.sencillito import SencillitoEnelDebtStatus, SencillitoInvoice
+from app.domain_repo import PropertyRecord
+from app.utility_agent import UtilityAgentResult
 from app.users_repo import UserRecord
 
 
@@ -68,8 +69,27 @@ def test_webhook_verification_with_invalid_token_returns_403() -> None:
 @pytest.mark.parametrize(
     ("user_record", "expected_reply"),
     [
-        (UserRecord(phone_e164="56912345678", role="TENANT", is_active=True), "hello arrendatario"),
-        (UserRecord(phone_e164="56912345678", role="LANDLORD", is_active=True), "hello arrendador"),
+        (
+            UserRecord(phone_e164="56912345678", role="TENANT", is_active=True),
+            (
+                "No pude identificar bien tu solicitud.\n\n"
+                "Por ahora puedo ayudarte con:\n"
+                "- responder preguntas del contrato\n"
+                "- listar departamentos registrados\n"
+                "- consultar deuda de luz ENEL"
+            ),
+        ),
+        (
+            UserRecord(phone_e164="56912345678", role="LANDLORD", is_active=True),
+            (
+                "No pude identificar bien tu solicitud.\n\n"
+                "Por ahora puedo ayudarte con:\n"
+                "- responder preguntas del contrato\n"
+                "- revisar estado del arriendo\n"
+                "- listar departamentos registrados\n"
+                "- consultar deuda de luz ENEL"
+            ),
+        ),
         (None, "no autorizado"),
         (UserRecord(phone_e164="56912345678", role="TENANT", is_active=False), "no autorizado"),
     ],
@@ -247,49 +267,18 @@ def test_tenant_enel_debt_question_returns_grounded_answer(
     def fake_get_user_by_phone(sender_phone: str, settings) -> Optional[UserRecord]:
         return UserRecord(phone_e164=sender_phone, role="TENANT", is_active=True)
 
-    def fake_get_enel_electricity_account_for_user(sender_phone: str, settings, property_hint=None):
+    def fake_handle_utility_debt_task(sender_phone: str, message_body: str, settings, property_hint=None):
         assert property_hint == "navidad"
-        from app.domain_repo import UtilityAccountRecord
-
-        return UtilityAccountRecord(
-            property_name="Departamento Navidad",
-            provider_name="ENEL",
-            utility_type="ELECTRICITY",
-            service_account_number="312091-0",
-        )
-
-    def fake_fetch_sencillito_enel_debt_status(account_reference: str):
-        assert account_reference == "312091-0"
-        return SencillitoEnelDebtStatus(
-            client_number="3120910",
-            account_reference="312091-0",
-            utility_name="ENEL",
-            short_utility_name="Enel",
-            total_amount=16563,
-            total_records=1,
-            invoices=[
-                SencillitoInvoice(
-                    account_reference="312091-0",
-                    amount=16563,
-                    document_number="40016971491",
-                    label="DEUDA ACTUAL",
-                    authentication_code="775631818",
-                )
-            ],
-            session_key="scom-test",
-            raw_response={},
+        return UtilityAgentResult(
+            reply=(
+                "Para Departamento Navidad, la cuenta ENEL 312091-0 aparece "
+                "con deuda actual de $16.563. Documento asociado: 40016971491."
+            )
         )
 
     monkeypatch.setattr("app.main.send_text_reply", fake_send_text_reply)
     monkeypatch.setattr("app.main.get_user_by_phone", fake_get_user_by_phone)
-    monkeypatch.setattr(
-        "app.main.get_enel_electricity_account_for_user",
-        fake_get_enel_electricity_account_for_user,
-    )
-    monkeypatch.setattr(
-        "app.main.fetch_sencillito_enel_debt_status",
-        fake_fetch_sencillito_enel_debt_status,
-    )
+    monkeypatch.setattr("app.main.handle_utility_debt_task", fake_handle_utility_debt_task)
 
     with create_client() as client:
         response = client.post(
@@ -331,6 +320,72 @@ def test_tenant_enel_debt_question_returns_grounded_answer(
                 "con deuda actual de $16.563. Documento asociado: 40016971491."
             ),
         )
+    ]
+
+
+def test_property_list_question_returns_registered_properties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent_messages: list[tuple[str, str]] = []
+
+    async def fake_send_text_reply(sender_phone: str, settings, reply_body: str = "hello world") -> None:
+        sent_messages.append((sender_phone, reply_body))
+
+    def fake_get_user_by_phone(sender_phone: str, settings) -> Optional[UserRecord]:
+        return UserRecord(phone_e164=sender_phone, role="LANDLORD", is_active=True)
+
+    def fake_list_active_properties_for_user(sender_phone: str, settings) -> list[PropertyRecord]:
+        return [
+            PropertyRecord(
+                property_id="property-1",
+                name="Depto Centro",
+                code="PROP-001",
+                street_address="Av. Providencia 1234",
+                commune="Providencia",
+            )
+        ]
+
+    monkeypatch.setattr("app.main.send_text_reply", fake_send_text_reply)
+    monkeypatch.setattr("app.main.get_user_by_phone", fake_get_user_by_phone)
+    monkeypatch.setattr(
+        "app.main.list_active_properties_for_user",
+        fake_list_active_properties_for_user,
+    )
+
+    with create_client() as client:
+        response = client.post(
+            "/webhook",
+            json={
+                "entry": [
+                    {
+                        "changes": [
+                            {
+                                "value": {
+                                    "messages": [
+                                        {
+                                            "from": "56996096419",
+                                            "id": "wamid-5",
+                                            "type": "text",
+                                            "text": {
+                                                "body": (
+                                                    "cuantos departamentos mios "
+                                                    "tienes registrados?"
+                                                )
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert sent_messages == [
+        ("56996096419", "Tengo 1 departamento registrado: Depto Centro.")
     ]
 
 

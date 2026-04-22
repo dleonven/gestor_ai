@@ -227,6 +227,20 @@ create trigger trg_documents_updated_at
 before update on public.documents
 for each row execute function public.set_updated_at();
 
+create table if not exists public.conversation_states (
+  phone_e164 text primary key,
+  state_type text not null,
+  payload jsonb not null default '{}'::jsonb,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+drop trigger if exists trg_conversation_states_updated_at on public.conversation_states;
+create trigger trg_conversation_states_updated_at
+before update on public.conversation_states
+for each row execute function public.set_updated_at();
+
 alter table public.utility_bills
   add constraint utility_bills_source_document_fk
   foreign key (source_document_id) references public.documents(id) on delete set null;
