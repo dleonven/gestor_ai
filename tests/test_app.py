@@ -76,7 +76,8 @@ def test_webhook_verification_with_invalid_token_returns_403() -> None:
                 "Por ahora puedo ayudarte con:\n"
                 "- responder preguntas del contrato\n"
                 "- listar departamentos registrados\n"
-                "- consultar deuda de luz ENEL"
+                "- consultar deuda de luz ENEL\n"
+                "- consultar deuda de agua"
             ),
         ),
         (
@@ -87,7 +88,8 @@ def test_webhook_verification_with_invalid_token_returns_403() -> None:
                 "- responder preguntas del contrato\n"
                 "- revisar estado del arriendo\n"
                 "- listar departamentos registrados\n"
-                "- consultar deuda de luz ENEL"
+                "- consultar deuda de luz ENEL\n"
+                "- consultar deuda de agua"
             ),
         ),
         (None, "no autorizado"),
@@ -267,7 +269,14 @@ def test_tenant_enel_debt_question_returns_grounded_answer(
     def fake_get_user_by_phone(sender_phone: str, settings) -> Optional[UserRecord]:
         return UserRecord(phone_e164=sender_phone, role="TENANT", is_active=True)
 
-    def fake_handle_utility_debt_task(sender_phone: str, message_body: str, settings, property_hint=None):
+    def fake_handle_utility_debt_task(
+        sender_phone: str,
+        message_body: str,
+        settings,
+        property_hint=None,
+        utility_type=None,
+        provider_name=None,
+    ):
         assert property_hint == "navidad"
         return UtilityAgentResult(
             reply=(

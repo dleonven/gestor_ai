@@ -6,15 +6,20 @@ from typing import Any, Optional
 
 import httpx
 
+from app.sencillito import (
+    PROVIDER_AGUAS_ANDINAS,
+    PROVIDER_ENEL,
+    UTILITY_ELECTRICITY,
+    UTILITY_WATER,
+    resolve_supported_provider_name,
+)
+
 
 INTENT_CONTRACT_QA = "CONTRACT_QA"
 INTENT_RENT_STATUS = "RENT_STATUS"
 INTENT_UTILITY_DEBT = "UTILITY_DEBT"
 INTENT_PROPERTY_LIST = "PROPERTY_LIST"
 INTENT_UNKNOWN = "UNKNOWN"
-
-UTILITY_ELECTRICITY = "ELECTRICITY"
-PROVIDER_ENEL = "ENEL"
 
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 
@@ -23,13 +28,14 @@ SYSTEM_PROMPT = """Eres el clasificador de intención de un bot de WhatsApp para
 Devuelve solo JSON válido con esta forma:
 {
   "intent": "CONTRACT_QA|RENT_STATUS|UTILITY_DEBT|PROPERTY_LIST|UNKNOWN",
-  "utility_type": "ELECTRICITY|null",
-  "provider": "ENEL|null",
+  "utility_type": "ELECTRICITY|WATER|null",
+  "provider": "ENEL|Aguas Andinas|Essbio|Esval|otro|null",
   "property_hint": "texto breve|null"
 }
 
 Reglas:
 - Si pregunta por luz, electricidad, cuenta de luz o ENEL, usa intent UTILITY_DEBT, utility_type ELECTRICITY y provider ENEL.
+- Si pregunta por agua, cuenta de agua, agua potable o una sanitaria como Aguas Andinas, Essbio o Esval, usa intent UTILITY_DEBT, utility_type WATER. Usa provider si el usuario menciona una empresa; si no, null.
 - Si pregunta si pagaron el arriendo o estado del arriendo, usa RENT_STATUS.
 - Si pregunta cuántos departamentos, propiedades o inmuebles tiene registrados, usa PROPERTY_LIST.
 - Si pregunta por cláusulas, garantía, aviso, reajuste, fechas o monto del contrato, usa CONTRACT_QA.
@@ -110,6 +116,30 @@ def classify_message_fallback(message_body: str) -> BotIntent:
             intent=INTENT_UTILITY_DEBT,
             utility_type=UTILITY_ELECTRICITY,
             provider=PROVIDER_ENEL,
+            property_hint=extract_property_hint_fallback(normalized),
+        )
+
+    water_provider = resolve_supported_provider_name(message_body, UTILITY_WATER)
+    if water_provider or any(
+        term in normalized
+        for term in (
+            "cuenta de agua",
+            "deuda de agua",
+            "agua potable",
+            "pagar el agua",
+            "pagada el agua",
+            "aguas andinas",
+            "essbio",
+            "esval",
+            "smapa",
+            "suralis",
+            "essal",
+        )
+    ):
+        return BotIntent(
+            intent=INTENT_UTILITY_DEBT,
+            utility_type=UTILITY_WATER,
+            provider=water_provider,
             property_hint=extract_property_hint_fallback(normalized),
         )
 

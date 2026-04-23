@@ -7,6 +7,7 @@ CAPABILITY_CONTRACT_QA = "contract_qa"
 CAPABILITY_ENEL_DEBT_LOOKUP = "enel_debt_lookup"
 CAPABILITY_PROPERTY_LIST = "property_list"
 CAPABILITY_RENT_STATUS = "rent_status"
+CAPABILITY_WATER_DEBT_LOOKUP = "water_debt_lookup"
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,13 @@ CAPABILITIES: dict[str, Capability] = {
         enabled=True,
         roles=(ROLE_TENANT, ROLE_LANDLORD),
         examples=("cuánto se debe de luz?", "mi depto tiene cuentas de luz pendientes?"),
+    ),
+    CAPABILITY_WATER_DEBT_LOOKUP: Capability(
+        capability_id=CAPABILITY_WATER_DEBT_LOOKUP,
+        label="consultar deuda de agua",
+        enabled=True,
+        roles=(ROLE_TENANT, ROLE_LANDLORD),
+        examples=("cuánto se debe de agua?", "mi depto tiene cuentas de agua pendientes?"),
     ),
 }
 

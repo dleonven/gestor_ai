@@ -139,6 +139,79 @@ def get_enel_electricity_account_for_user(
     )
 
 
+def get_utility_account_for_user(
+    phone_e164: str,
+    settings: Settings,
+    *,
+    utility_type: str,
+    provider_name: Optional[str] = None,
+    property_hint: Optional[str] = None,
+) -> Optional[UtilityAccountRecord]:
+    import psycopg
+
+    property_filter = ""
+    provider_filter = ""
+    params: list[str] = [phone_e164, utility_type]
+    if provider_name:
+        provider_filter = "and ua.provider_name ilike %s"
+        params.append(provider_name)
+    if property_hint:
+        property_filter = """
+          and (
+            p.name ilike %s
+            or coalesce(p.code, '') ilike %s
+            or coalesce(p.street_address, '') ilike %s
+            or coalesce(p.commune, '') ilike %s
+          )
+        """
+        pattern = f"%{property_hint}%"
+        params.extend([pattern, pattern, pattern, pattern])
+
+    query = f"""
+        select distinct
+            p.id::text,
+            p.name,
+            ua.provider_name,
+            ua.utility_type,
+            ua.service_account_number
+        from public.users u
+        join public.tenancies t
+          on (
+            t.tenant_user_id = u.id
+            or t.landlord_user_id = u.id
+          )
+        join public.properties p on p.id = t.property_id
+        join public.utility_accounts ua on ua.property_id = p.id
+        where u.phone_e164 = %s
+          and u.is_active = true
+          and t.contract_status = 'ACTIVE'
+          and ua.is_active = true
+          and ua.utility_type = %s
+          {provider_filter}
+          and ua.service_account_number is not null
+          {property_filter}
+        order by p.name
+        limit 2
+    """
+
+    with psycopg.connect(settings.database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+    if len(rows) != 1:
+        return None
+
+    row = rows[0]
+    return UtilityAccountRecord(
+        property_id=row[0],
+        property_name=row[1],
+        provider_name=row[2],
+        utility_type=row[3],
+        service_account_number=row[4],
+    )
+
+
 def list_active_properties_for_user(
     phone_e164: str, settings: Settings
 ) -> list[PropertyRecord]:
@@ -285,8 +358,79 @@ def get_enel_electricity_account_for_property(
     )
 
 
+def get_utility_account_for_property(
+    property_id: str,
+    settings: Settings,
+    *,
+    utility_type: str,
+    provider_name: Optional[str] = None,
+) -> Optional[UtilityAccountRecord]:
+    import psycopg
+
+    provider_filter = ""
+    params: list[str] = [utility_type]
+    if provider_name:
+        provider_filter = "and ua.provider_name ilike %s"
+        params.append(provider_name)
+    params.append(property_id)
+
+    query = f"""
+        select
+            p.id::text,
+            p.name,
+            ua.provider_name,
+            ua.utility_type,
+            ua.service_account_number
+        from public.properties p
+        left join public.utility_accounts ua
+          on ua.property_id = p.id
+          and ua.utility_type = %s
+          and ua.is_active = true
+          {provider_filter}
+        where p.id = %s
+          and p.is_active = true
+        order by ua.updated_at desc nulls last
+        limit 1
+    """
+
+    with psycopg.connect(settings.database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return UtilityAccountRecord(
+        property_id=row[0],
+        property_name=row[1],
+        provider_name=row[2] or (provider_name or ""),
+        utility_type=row[3] or utility_type,
+        service_account_number=row[4],
+    )
+
+
 def save_enel_electricity_client_number(
     property_id: str, client_identifier: str, settings: Settings
+) -> UtilityAccountRecord:
+    return save_utility_client_number(
+        property_id,
+        provider_name="ENEL",
+        utility_type="ELECTRICITY",
+        client_identifier=client_identifier,
+        payment_url="https://sencillito.com/pagos-de-la-factura?convenioId=516&industriaId=13",
+        settings=settings,
+    )
+
+
+def save_utility_client_number(
+    property_id: str,
+    *,
+    provider_name: str,
+    utility_type: str,
+    client_identifier: str,
+    payment_url: str,
+    settings: Settings,
 ) -> UtilityAccountRecord:
     import psycopg
 
@@ -301,10 +445,10 @@ def save_enel_electricity_client_number(
         )
         values (
             %s,
-            'ENEL',
-            'ELECTRICITY',
             %s,
-            'https://sencillito.com/pagos-de-la-factura?convenioId=516&industriaId=13',
+            %s,
+            %s,
+            %s,
             true
         )
         on conflict do nothing
@@ -312,14 +456,14 @@ def save_enel_electricity_client_number(
     update_query = """
         update public.utility_accounts
         set service_account_number = %s,
-            payment_url = 'https://sencillito.com/pagos-de-la-factura?convenioId=516&industriaId=13',
+            payment_url = %s,
             is_active = true
         where id = (
             select id
             from public.utility_accounts
             where property_id = %s
-              and utility_type = 'ELECTRICITY'
-              and provider_name ilike 'ENEL'
+              and utility_type = %s
+              and provider_name ilike %s
             order by updated_at desc
             limit 1
         )
@@ -327,11 +471,34 @@ def save_enel_electricity_client_number(
 
     with psycopg.connect(settings.database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query, (property_id, client_identifier))
-            cursor.execute(update_query, (client_identifier, property_id))
+            cursor.execute(
+                query,
+                (
+                    property_id,
+                    provider_name,
+                    utility_type,
+                    client_identifier,
+                    payment_url,
+                ),
+            )
+            cursor.execute(
+                update_query,
+                (
+                    client_identifier,
+                    payment_url,
+                    property_id,
+                    utility_type,
+                    provider_name,
+                ),
+            )
         connection.commit()
 
-    account = get_enel_electricity_account_for_property(property_id, settings)
+    account = get_utility_account_for_property(
+        property_id,
+        settings,
+        utility_type=utility_type,
+        provider_name=provider_name,
+    )
     if account is None:
-        raise RuntimeError("Could not save ENEL client identifier")
+        raise RuntimeError("Could not save utility client identifier")
     return account

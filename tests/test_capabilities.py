@@ -20,7 +20,8 @@ def test_supported_actions_reply_lists_current_capabilities() -> None:
         "- responder preguntas del contrato\n"
         "- revisar estado del arriendo\n"
         "- listar departamentos registrados\n"
-        "- consultar deuda de luz ENEL"
+        "- consultar deuda de luz ENEL\n"
+        "- consultar deuda de agua"
     )
 
 

@@ -16,7 +16,11 @@ from app.bot_intent import (
 )
 from app.capabilities import build_supported_actions_reply
 from app.config import Settings
-from app.conversation_state import STATE_COLLECT_ENEL_CLIENT_ID, get_active_conversation_state
+from app.conversation_state import (
+    STATE_COLLECT_ENEL_CLIENT_ID,
+    STATE_COLLECT_UTILITY_ACCOUNT_ID,
+    get_active_conversation_state,
+)
 from app.contract_qa import answer_contract_question
 from app.domain_repo import (
     get_latest_rent_status_for_landlord,
@@ -106,7 +110,7 @@ async def resolve_reply_body(
     if user is None or not user.is_active:
         return UNAUTHORIZED_REPLY
     if await has_pending_utility_task(sender_phone, settings):
-        return await resolve_enel_debt_status(sender_phone, message_body, settings)
+        return await resolve_utility_debt_status(sender_phone, message_body, settings)
     intent = classify_message(message_body)
     if intent.intent == INTENT_CONTRACT_QA:
         return await resolve_contract_question(message_body)
@@ -115,8 +119,13 @@ async def resolve_reply_body(
     if user.role == ROLE_LANDLORD and intent.intent == INTENT_RENT_STATUS:
         return await resolve_landlord_rent_status(sender_phone, settings)
     if intent.intent == INTENT_UTILITY_DEBT:
-        return await resolve_enel_debt_status(
-            sender_phone, message_body, settings, property_hint=intent.property_hint
+        return await resolve_utility_debt_status(
+            sender_phone,
+            message_body,
+            settings,
+            property_hint=intent.property_hint,
+            utility_type=intent.utility_type,
+            provider_name=intent.provider,
         )
     if user.role in (ROLE_TENANT, ROLE_LANDLORD):
         return unknown_intent_reply(user.role)
@@ -182,14 +191,19 @@ async def has_pending_utility_task(sender_phone: str, settings: Settings) -> boo
     except Exception:
         LOGGER.exception("conversation_state_lookup status=error from=%s", sender_phone)
         return False
-    return state is not None and state.state_type == STATE_COLLECT_ENEL_CLIENT_ID
+    return state is not None and state.state_type in {
+        STATE_COLLECT_ENEL_CLIENT_ID,
+        STATE_COLLECT_UTILITY_ACCOUNT_ID,
+    }
 
 
-async def resolve_enel_debt_status(
+async def resolve_utility_debt_status(
     sender_phone: str,
     message_body: str,
     settings: Settings,
     property_hint: Optional[str] = None,
+    utility_type: Optional[str] = None,
+    provider_name: Optional[str] = None,
 ) -> str:
     try:
         result = await asyncio.to_thread(
@@ -198,10 +212,12 @@ async def resolve_enel_debt_status(
             message_body,
             settings,
             property_hint=property_hint,
+            utility_type=utility_type or "ELECTRICITY",
+            provider_name=provider_name,
         )
     except Exception:
         LOGGER.exception("utility_agent status=error from=%s", sender_phone)
-        return "No pude consultar ENEL en este momento. Inténtalo nuevamente en unos minutos."
+        return "No pude consultar la cuenta de servicios en este momento. Inténtalo nuevamente en unos minutos."
     return result.reply
 
 
